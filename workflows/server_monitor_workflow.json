@@ -1,0 +1,122 @@
+{
+  "name": "Ubuntu Server Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://YOUR_SERVER_IP:5000/api/system-status",
+        "options": {}
+      },
+      "name": "Get System Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "model": "gpt-3.5-turbo",
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 800
+        },
+        "messages": {
+          "values": [
+            {
+              "message": "=File content from \"prompts/system_summary_prompt.txt\" with {{system_data}} replaced by $json(Get System Status)"
+            }
+          ]
+        }
+      },
+      "name": "OpenAI",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "discord",
+        "resource": "webhook",
+        "webhookUrl": "YOUR_DISCORD_WEBHOOK_URL",
+        "embeds": {
+          "values": [
+            {
+              "title": "🖥️ รายงานสถานะเซิร์ฟเวอร์ Ubuntu",
+              "description": "={{ $json.text }}",
+              "color": "={{ $json.includes('วิกฤต') ? 16711680 : $json.includes('เฝ้าระวัง') ? 16754432 : 65280 }}",
+              "timestamp": "={{ $now.toISOString() }}"
+            }
+          ]
+        }
+      },
+      "name": "Discord",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get System Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get System Status": {
+      "main": [
+        [
+          {
+            "node": "OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
