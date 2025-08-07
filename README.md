@@ -12,6 +12,19 @@
 4. **ส่วนหลังบ้านและ API (Backend/API Layer)**: Python + Flask
 5. **ส่วนดึงข้อมูล (Data Source Layer)**: Ubuntu 24 + Python Library psutil
 
+
+Ubuntu-Health-Monitor/
+├── app.py                         # Flask API หลัก
+├── requirements.txt               # รายการ package ที่ต้องใช้
+├── docker-compose.yml             # สำหรับรัน n8n
+├── prompts/
+│   └── system_summary_prompt.txt  # Prompt template สำหรับ OpenAI
+├── workflows/
+│   └── server_monitor_workflow.json  # n8n workflow
+├── ubuntu-health-monitor.service  # systemd service file
+├── test_api.py                    # ไฟล์ทดสอบ API
+└── README.md                      # คำอธิบายโปรเจกต์
+
 ## 🚀 การติดตั้ง
 
 ### 1. การติดตั้ง Flask API
