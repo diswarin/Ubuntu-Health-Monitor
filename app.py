@@ -1,11 +1,28 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import psutil
 import platform
 import datetime
 import socket
 import os
+import json
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
 
 app = Flask(__name__)
+
+# Load configuration
+with open('config/settings.json', 'r') as f:
+    config = json.load(f)
+
+# InfluxDB configuration
+INFLUXDB_URL = config.get('influxdb_url', 'http://localhost:8086')
+INFLUXDB_TOKEN = config.get('influxdb_token', 'YourSecureToken123')
+INFLUXDB_ORG = config.get('influxdb_org', 'ubuntu-monitor')
+INFLUXDB_BUCKET = config.get('influxdb_bucket', 'system-metrics')
+
+# Initialize InfluxDB client
+influxdb_client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+write_api = influxdb_client.write_api(write_options=SYNCHRONOUS)
 
 @app.route('/api/system-status', methods=['GET'])
 def get_system_status():
@@ -43,8 +60,8 @@ def get_system_status():
         'processor': platform.processor()
     }
     
-    # Return all info as JSON
-    return jsonify({
+    # Create response data
+    response_data = {
         'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'system': system_info,
         'cpu': {
@@ -87,7 +104,86 @@ def get_system_status():
         'processes': {
             'count': process_count
         }
-    })
+    }
+    
+    # Write data to InfluxDB if enabled in config
+    if config.get('influxdb_enabled', True):
+        try:
+            # Create a point for CPU metrics
+            point = Point("system_metrics") \
+                .tag("host", system_info['hostname']) \
+                .field("cpu_percent", cpu_percent) \
+                .field("memory_percent", memory.percent) \
+                .field("disk_percent", disk.percent) \
+                .field("load_avg_1min", load_avg[0]) \
+                .field("process_count", process_count) \
+                .time(datetime.datetime.utcnow())
+            
+            # Write the point to InfluxDB
+            write_api.write(bucket=INFLUXDB_BUCKET, record=point)
+            
+            # Log successful write to InfluxDB
+            app.logger.info(f"Data written to InfluxDB at {datetime.datetime.now()}")
+        except Exception as e:
+            app.logger.error(f"Error writing to InfluxDB: {str(e)}")
+    
+    # Return response data as JSON
+    return jsonify(response_data)
+
+@app.route('/api/metrics/history', methods=['GET'])
+def get_metrics_history():
+    # Get query parameters
+    metric = request.args.get('metric', 'cpu_percent')
+    duration = request.args.get('duration', '1h')
+    
+    # Query InfluxDB for historical data
+    query_api = influxdb_client.query_api()
+    query = f'''
+    from(bucket: "{INFLUXDB_BUCKET}")
+        |> range(start: -{duration})
+        |> filter(fn: (r) => r._measurement == "system_metrics")
+        |> filter(fn: (r) => r._field == "{metric}")
+    '''
+    
+    try:
+        result = query_api.query(org=INFLUXDB_ORG, query=query)
+        
+        # Process the results
+        data_points = []
+        for table in result:
+            for record in table.records:
+                data_points.append({
+                    'time': record.get_time().strftime('%Y-%m-%d %H:%M:%S'),
+                    'value': record.get_value()
+                })
+        
+        return jsonify({
+            'metric': metric,
+            'duration': duration,
+            'data_points': data_points
+        })
+    except Exception as e:
+        app.logger.error(f"Error querying InfluxDB: {str(e)}")
+        return jsonify({
+            'error': f"Failed to retrieve historical data: {str(e)}"
+        }), 500
 
 if __name__ == '__main__':
+    # Create directory for logs if it doesn't exist
+    os.makedirs('logs', exist_ok=True)
+    
+    # Set up logging
+    import logging
+    from logging.handlers import RotatingFileHandler
+    
+    handler = RotatingFileHandler('logs/api.log', maxBytes=10000000, backupCount=5)
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+    ))
+    handler.setLevel(logging.INFO)
+    app.logger.addHandler(handler)
+    app.logger.setLevel(logging.INFO)
+    app.logger.info('Ubuntu Health Monitor starting up')
+    
+    # Run the Flask app
     app.run(host='0.0.0.0', port=5000, debug=False)
