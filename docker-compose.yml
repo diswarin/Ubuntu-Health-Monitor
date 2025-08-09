@@ -1,58 +1,51 @@
 version: '3'
 
 services:
-  n8n:
-    image: n8nio/n8n
-    restart: always
-    ports:
-      - "5678:5678"
-    environment:
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=YourSecurePassword123
-      - N8N_HOST=localhost
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - N8N_ENCRYPTION_KEY=YourEncryptionKey123
-      - WEBHOOK_URL=http://localhost:5678/
-    volumes:
-      - ./n8n-data:/home/node/.n8n
-    networks:
-      - ubuntu-monitor-network
-
   influxdb:
-    image: influxdb:latest
-    restart: always
+    image: influxdb:2.7
+    container_name: influxdb
     ports:
       - "8086:8086"
+    volumes:
+      - ./influxdb-data:/var/lib/influxdb2
     environment:
       - DOCKER_INFLUXDB_INIT_MODE=setup
       - DOCKER_INFLUXDB_INIT_USERNAME=admin
-      - DOCKER_INFLUXDB_INIT_PASSWORD=YourSecurePassword123
-      - DOCKER_INFLUXDB_INIT_ORG=ubuntu-monitor
-      - DOCKER_INFLUXDB_INIT_BUCKET=system-metrics
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=YourSecureToken123
-    volumes:
-      - ./influxdb-data:/var/lib/influxdb2
-    networks:
-      - ubuntu-monitor-network
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
+      - DOCKER_INFLUXDB_INIT_ORG=my-org
+      - DOCKER_INFLUXDB_INIT_BUCKET=system_metrics
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=my-token
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana:latest
-    restart: always
+    container_name: grafana
     ports:
       - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=YourSecurePassword123
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
     volumes:
       - ./grafana-data:/var/lib/grafana
+      - ./dashboards:/etc/grafana/provisioning/dashboards
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
     depends_on:
       - influxdb
-    networks:
-      - ubuntu-monitor-network
+    restart: unless-stopped
 
-networks:
-  ubuntu-monitor-network:
-    driver: bridge
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    volumes:
+      - ./n8n-data:/home/node/.n8n
+      - ./workflows:/home/node/.n8n/workflows
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - NODE_ENV=production
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=Asia/Bangkok
+    restart: unless-stopped
