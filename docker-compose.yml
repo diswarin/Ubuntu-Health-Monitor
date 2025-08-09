@@ -17,3 +17,42 @@ services:
       - WEBHOOK_URL=http://localhost:5678/
     volumes:
       - ./n8n-data:/home/node/.n8n
+    networks:
+      - ubuntu-monitor-network
+
+  influxdb:
+    image: influxdb:latest
+    restart: always
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=YourSecurePassword123
+      - DOCKER_INFLUXDB_INIT_ORG=ubuntu-monitor
+      - DOCKER_INFLUXDB_INIT_BUCKET=system-metrics
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=YourSecureToken123
+    volumes:
+      - ./influxdb-data:/var/lib/influxdb2
+    networks:
+      - ubuntu-monitor-network
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=YourSecurePassword123
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - ./grafana-data:/var/lib/grafana
+    depends_on:
+      - influxdb
+    networks:
+      - ubuntu-monitor-network
+
+networks:
+  ubuntu-monitor-network:
+    driver: bridge
