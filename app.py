@@ -1,189 +1,568 @@
-from flask import Flask, jsonify, request
-import psutil
-import platform
-import datetime
-import socket
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Ubuntu Health Monitor - Flask API
+
+ระบบติดตามและวิเคราะห์สถานะเซิร์ฟเวอร์ Ubuntu แบบเรียลไทม์
+"""
+
 import os
 import json
+import logging
+import platform
+import psutil
+import requests
+import subprocess
+import time
+from datetime import datetime
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+import openai
 
-app = Flask(__name__)
+# ตั้งค่า logging
+if not os.path.exists('logs'):
+    os.makedirs('logs')
 
-# Load configuration
-with open('config/settings.json', 'r') as f:
-    config = json.load(f)
+logging.basicConfig(
+    filename='logs/api.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-# InfluxDB configuration
-INFLUXDB_URL = config.get('influxdb_url', 'http://localhost:8086')
-INFLUXDB_TOKEN = config.get('influxdb_token', 'YourSecureToken123')
-INFLUXDB_ORG = config.get('influxdb_org', 'ubuntu-monitor')
-INFLUXDB_BUCKET = config.get('influxdb_bucket', 'system-metrics')
+# โหลดการตั้งค่า
+try:
+    with open('config/settings.json', 'r') as f:
+        settings = json.load(f)
+except FileNotFoundError:
+    logging.error("ไม่พบไฟล์ settings.json")
+    settings = {
+        "openai": {"api_key": "", "model": "gpt-4"},
+        "discord": {"webhook_url": ""},
+        "influxdb": {
+            "url": "http://localhost:8086",
+            "token": "my-token",
+            "org": "my-org",
+            "bucket": "system_metrics"
+        }
+    }
 
-# Initialize InfluxDB client
-influxdb_client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+try:
+    with open('config/thresholds.json', 'r') as f:
+        thresholds = json.load(f)
+except FileNotFoundError:
+    logging.error("ไม่พบไฟล์ thresholds.json")
+    thresholds = {
+        "cpu_percent": 80,
+        "memory_percent": 85,
+        "disk_percent": 90,
+        "temperature": 70
+    }
+
+# ตั้งค่า OpenAI API
+if settings["openai"]["api_key"]:
+    openai.api_key = settings["openai"]["api_key"]
+
+# ตั้งค่า InfluxDB client
+influxdb_client = InfluxDBClient(
+    url=settings["influxdb"]["url"],
+    token=settings["influxdb"]["token"],
+    org=settings["influxdb"]["org"]
+)
 write_api = influxdb_client.write_api(write_options=SYNCHRONOUS)
 
-@app.route('/api/system-status', methods=['GET'])
-def get_system_status():
-    # CPU info
-    cpu_percent = psutil.cpu_percent(interval=1)
-    cpu_count = psutil.cpu_count(logical=True)
-    cpu_freq = psutil.cpu_freq()
+# โหลด system prompt
+try:
+    with open('prompts/system_summary_prompt.txt', 'r') as f:
+        system_summary_prompt = f.read()
+except FileNotFoundError:
+    logging.warning("ไม่พบไฟล์ system_summary_prompt.txt")
+    system_summary_prompt = """
+    คุณเป็น AI ผู้เชี่ยวชาญด้านการวิเคราะห์ระบบ Linux/Ubuntu
+    วิเคราะห์ข้อมูลระบบต่อไปนี้และให้สรุปสถานะและคำแนะนำ:
+    {system_data}
     
-    # Memory info
-    memory = psutil.virtual_memory()
-    
-    # Disk info
-    disk = psutil.disk_usage('/')
-    
-    # Network info
-    net_io = psutil.net_io_counters()
-    
-    # System uptime
-    boot_time = datetime.datetime.fromtimestamp(psutil.boot_time())
-    uptime = datetime.datetime.now() - boot_time
-    
-    # Load average
-    load_avg = os.getloadavg() if hasattr(os, 'getloadavg') else (0, 0, 0)
-    
-    # Running processes
-    process_count = len(list(psutil.process_iter()))
-    
-    # Basic system info
-    system_info = {
-        'hostname': socket.gethostname(),
-        'platform': platform.system(),
-        'platform_release': platform.release(),
-        'platform_version': platform.version(),
-        'architecture': platform.machine(),
-        'processor': platform.processor()
-    }
-    
-    # Create response data
-    response_data = {
-        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'system': system_info,
-        'cpu': {
-            'percent': cpu_percent,
-            'count': cpu_count,
-            'frequency_mhz': cpu_freq.current if cpu_freq else None,
-            'load_avg_1min': load_avg[0],
-            'load_avg_5min': load_avg[1],
-            'load_avg_15min': load_avg[2]
-        },
-        'memory': {
-            'total_gb': round(memory.total / (1024**3), 2),
-            'available_gb': round(memory.available / (1024**3), 2),
-            'used_gb': round(memory.used / (1024**3), 2),
-            'percent': memory.percent
-        },
-        'disk': {
-            'total_gb': round(disk.total / (1024**3), 2),
-            'used_gb': round(disk.used / (1024**3), 2),
-            'free_gb': round(disk.free / (1024**3), 2),
-            'percent': disk.percent
-        },
-        'network': {
-            'bytes_sent_mb': round(net_io.bytes_sent / (1024**2), 2),
-            'bytes_recv_mb': round(net_io.bytes_recv / (1024**2), 2),
-            'packets_sent': net_io.packets_sent,
-            'packets_recv': net_io.packets_recv,
-            'errin': net_io.errin,
-            'errout': net_io.errout,
-            'dropin': net_io.dropin,
-            'dropout': net_io.dropout
-        },
-        'uptime': {
-            'days': uptime.days,
-            'hours': uptime.seconds // 3600,
-            'minutes': (uptime.seconds % 3600) // 60,
-            'seconds': uptime.seconds % 60,
-            'boot_time': boot_time.strftime('%Y-%m-%d %H:%M:%S')
-        },
-        'processes': {
-            'count': process_count
+    โปรดวิเคราะห์:
+    1. สถานะทั่วไปของระบบ
+    2. ปัญหาที่พบหรืออาจเกิดขึ้น
+    3. คำแนะนำในการแก้ไขหรือปรับปรุง
+    4. ทรัพยากรใดที่อาจต้องได้รับการอัปเกรด
+    """
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route('/api/v1/system/info', methods=['GET'])
+def get_system_info():
+    """ข้อมูลระบบทั้งหมด"""
+    data = {
+        "cpu": get_cpu_info(),
+        "memory": get_memory_info(),
+        "disk": get_disk_info(),
+        "network": get_network_info(),
+        "temperature": get_temperature_info(),
+        "system": {
+            "platform": platform.platform(),
+            "hostname": platform.node(),
+            "kernel": platform.release(),
+            "uptime": get_uptime(),
+            "timestamp": datetime.now().isoformat()
         }
     }
     
-    # Write data to InfluxDB if enabled in config
-    if config.get('influxdb_enabled', True):
-        try:
-            # Create a point for CPU metrics
-            point = Point("system_metrics") \
-                .tag("host", system_info['hostname']) \
-                .field("cpu_percent", cpu_percent) \
-                .field("memory_percent", memory.percent) \
-                .field("disk_percent", disk.percent) \
-                .field("load_avg_1min", load_avg[0]) \
-                .field("process_count", process_count) \
-                .time(datetime.datetime.utcnow())
-            
-            # Write the point to InfluxDB
-            write_api.write(bucket=INFLUXDB_BUCKET, record=point)
-            
-            # Log successful write to InfluxDB
-            app.logger.info(f"Data written to InfluxDB at {datetime.datetime.now()}")
-        except Exception as e:
-            app.logger.error(f"Error writing to InfluxDB: {str(e)}")
+    # เก็บข้อมูลลง InfluxDB
+    try:
+        store_in_influxdb(data)
+    except Exception as e:
+        logging.error(f"ไม่สามารถบันทึกข้อมูลลง InfluxDB: {str(e)}")
     
-    # Return response data as JSON
-    return jsonify(response_data)
+    # ตรวจสอบ thresholds และส่งการแจ้งเตือนถ้าจำเป็น
+    check_thresholds(data)
+    
+    return jsonify(data)
 
-@app.route('/api/metrics/history', methods=['GET'])
-def get_metrics_history():
-    # Get query parameters
-    metric = request.args.get('metric', 'cpu_percent')
-    duration = request.args.get('duration', '1h')
+@app.route('/api/v1/system/cpu', methods=['GET'])
+def get_cpu_endpoint():
+    """ข้อมูล CPU"""
+    return jsonify(get_cpu_info())
+
+@app.route('/api/v1/system/memory', methods=['GET'])
+def get_memory_endpoint():
+    """ข้อมูล Memory"""
+    return jsonify(get_memory_info())
+
+@app.route('/api/v1/system/disk', methods=['GET'])
+def get_disk_endpoint():
+    """ข้อมูล Disk"""
+    return jsonify(get_disk_info())
+
+@app.route('/api/v1/system/network', methods=['GET'])
+def get_network_endpoint():
+    """ข้อมูล Network"""
+    return jsonify(get_network_info())
+
+@app.route('/api/v1/system/temperature', methods=['GET'])
+def get_temperature_endpoint():
+    """ข้อมูลอุณหภูมิ"""
+    return jsonify(get_temperature_info())
+
+@app.route('/api/v1/system/summary', methods=['GET'])
+def get_ai_summary():
+    """สรุปสถานะระบบด้วย AI"""
+    if not settings["openai"]["api_key"]:
+        return jsonify({"error": "OpenAI API key ไม่ได้ถูกตั้งค่า"}), 500
     
-    # Query InfluxDB for historical data
-    query_api = influxdb_client.query_api()
-    query = f'''
-    from(bucket: "{INFLUXDB_BUCKET}")
-        |> range(start: -{duration})
-        |> filter(fn: (r) => r._measurement == "system_metrics")
-        |> filter(fn: (r) => r._field == "{metric}")
-    '''
+    # ดึงข้อมูลระบบ
+    system_data = {
+        "cpu": get_cpu_info(),
+        "memory": get_memory_info(),
+        "disk": get_disk_info(),
+        "temperature": get_temperature_info(),
+        "uptime": get_uptime()
+    }
     
     try:
-        result = query_api.query(org=INFLUXDB_ORG, query=query)
+        # สร้าง prompt
+        prompt = system_summary_prompt.format(system_data=json.dumps(system_data, indent=2))
         
-        # Process the results
-        data_points = []
-        for table in result:
-            for record in table.records:
-                data_points.append({
-                    'time': record.get_time().strftime('%Y-%m-%d %H:%M:%S'),
-                    'value': record.get_value()
-                })
+        # เรียกใช้ OpenAI API
+        response = openai.ChatCompletion.create(
+            model=settings["openai"]["model"],
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "วิเคราะห์สถานะระบบปัจจุบัน"}
+            ],
+            temperature=0.3,
+            max_tokens=800
+        )
+        
+        summary = response.choices[0].message.content
         
         return jsonify({
-            'metric': metric,
-            'duration': duration,
-            'data_points': data_points
+            "summary": summary,
+            "system_data": system_data,
+            "timestamp": datetime.now().isoformat()
         })
+    
     except Exception as e:
-        app.logger.error(f"Error querying InfluxDB: {str(e)}")
-        return jsonify({
-            'error': f"Failed to retrieve historical data: {str(e)}"
-        }), 500
+        logging.error(f"ไม่สามารถวิเคราะห์ข้อมูลด้วย OpenAI: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+def get_cpu_info():
+    """ดึงข้อมูล CPU"""
+    cpu_percent = psutil.cpu_percent(interval=1)
+    cpu_freq = psutil.cpu_freq()
+    load_avg = os.getloadavg()
+    
+    try:
+        # ดึงข้อมูล CPU จาก lscpu
+        cpu_info = subprocess.check_output(['lscpu'], text=True)
+        cpu_model = ""
+        
+        for line in cpu_info.split('\n'):
+            if 'Model name' in line:
+                cpu_model = line.split(':')[1].strip()
+                break
+    except:
+        cpu_model = "Unknown"
+    
+    return {
+        "percent": cpu_percent,
+        "cores": {
+            "physical": psutil.cpu_count(logical=False),
+            "logical": psutil.cpu_count(logical=True)
+        },
+        "frequency": {
+            "current": cpu_freq.current if cpu_freq else None,
+            "min": cpu_freq.min if cpu_freq and cpu_freq.min else None,
+            "max": cpu_freq.max if cpu_freq and cpu_freq.max else None
+        },
+        "load_average": {
+            "1min": load_avg[0],
+            "5min": load_avg[1],
+            "15min": load_avg[2]
+        },
+        "model": cpu_model
+    }
+
+def get_memory_info():
+    """ดึงข้อมูล Memory"""
+    mem = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+    
+    return {
+        "ram": {
+            "total": mem.total,
+            "available": mem.available,
+            "used": mem.used,
+            "percent": mem.percent
+        },
+        "swap": {
+            "total": swap.total,
+            "used": swap.used,
+            "free": swap.free,
+            "percent": swap.percent
+        }
+    }
+
+def get_disk_info():
+    """ดึงข้อมูล Disk"""
+    partitions = []
+    
+    for part in psutil.disk_partitions(all=False):
+        if os.path.exists(part.mountpoint):
+            usage = psutil.disk_usage(part.mountpoint)
+            partitions.append({
+                "device": part.device,
+                "mountpoint": part.mountpoint,
+                "fstype": part.fstype,
+                "total": usage.total,
+                "used": usage.used,
+                "free": usage.free,
+                "percent": usage.percent
+            })
+    
+    # รวมข้อมูล I/O
+    try:
+        io_counters = psutil.disk_io_counters()
+        io = {
+            "read_count": io_counters.read_count,
+            "write_count": io_counters.write_count,
+            "read_bytes": io_counters.read_bytes,
+            "write_bytes": io_counters.write_bytes,
+            "read_time": io_counters.read_time,
+            "write_time": io_counters.write_time
+        }
+    except:
+        io = None
+    
+    return {
+        "partitions": partitions,
+        "io": io
+    }
+
+def get_network_info():
+    """ดึงข้อมูล Network"""
+    interfaces = {}
+    
+    # รวมข้อมูล interface
+    net_if_addrs = psutil.net_if_addrs()
+    for interface_name, addr_list in net_if_addrs.items():
+        addresses = []
+        for addr in addr_list:
+            address_info = {
+                "family": str(addr.family),
+                "address": addr.address,
+                "netmask": addr.netmask,
+                "broadcast": addr.broadcast
+            }
+            addresses.append(address_info)
+        
+        interfaces[interface_name] = {
+            "addresses": addresses
+        }
+    
+    # รวมข้อมูล IO
+    try:
+        net_io_counters = psutil.net_io_counters(pernic=True)
+        for interface_name, counters in net_io_counters.items():
+            if interface_name in interfaces:
+                interfaces[interface_name]["io"] = {
+                    "bytes_sent": counters.bytes_sent,
+                    "bytes_recv": counters.bytes_recv,
+                    "packets_sent": counters.packets_sent,
+                    "packets_recv": counters.packets_recv,
+                    "errin": counters.errin,
+                    "errout": counters.errout,
+                    "dropin": counters.dropin,
+                    "dropout": counters.dropout
+                }
+    except:
+        pass
+    
+    # ดึงข้อมูล connections
+    try:
+        connections = psutil.net_connections(kind='inet')
+        conn_stats = {
+            "established": 0,
+            "listen": 0,
+            "time_wait": 0,
+            "close_wait": 0,
+            "other": 0
+        }
+        
+        for conn in connections:
+            status = conn.status.lower()
+            if status == 'established':
+                conn_stats["established"] += 1
+            elif status == 'listen':
+                conn_stats["listen"] += 1
+            elif status == 'time_wait':
+                conn_stats["time_wait"] += 1
+            elif status == 'close_wait':
+                conn_stats["close_wait"] += 1
+            else:
+                conn_stats["other"] += 1
+    except:
+        conn_stats = None
+    
+    return {
+        "interfaces": interfaces,
+        "connections": conn_stats
+    }
+
+def get_temperature_info():
+    """ดึงข้อมูลอุณหภูมิ"""
+    temps = {}
+    
+    try:
+        # ดึงข้อมูลอุณหภูมิจาก psutil
+        temps_psutil = psutil.sensors_temperatures()
+        for chip, sensors in temps_psutil.items():
+            temps[chip] = []
+            for sensor in sensors:
+                temps[chip].append({
+                    "label": sensor.label,
+                    "current": sensor.current,
+                    "high": sensor.high,
+                    "critical": sensor.critical
+                })
+    except:
+        try:
+            # ถ้า psutil ไม่ทำงาน ลองใช้ lm-sensors
+            sensors_output = subprocess.check_output(['sensors', '-j'], text=True)
+            temps = json.loads(sensors_output)
+        except:
+            temps = {"error": "ไม่สามารถดึงข้อมูลอุณหภูมิได้"}
+    
+    return temps
+
+def get_uptime():
+    """ดึงข้อมูล uptime"""
+    try:
+        with open('/proc/uptime', 'r') as f:
+            uptime_seconds = float(f.readline().split()[0])
+        
+        return {
+            "seconds": uptime_seconds,
+            "formatted": format_uptime(uptime_seconds)
+        }
+    except:
+        return {
+            "seconds": 0,
+            "formatted": "Unknown"
+        }
+
+def format_uptime(seconds):
+    """แปลง uptime เป็น human-readable format"""
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    if days > 0:
+        return f"{int(days)} วัน, {int(hours)} ชั่วโมง, {int(minutes)} นาที"
+    elif hours > 0:
+        return f"{int(hours)} ชั่วโมง, {int(minutes)} นาที"
+    else:
+        return f"{int(minutes)} นาที, {int(seconds)} วินาที"
+
+def store_in_influxdb(data):
+    """เก็บข้อมูลลง InfluxDB"""
+    timestamp = datetime.utcnow()
+    
+    # CPU metrics
+    cpu_point = Point("cpu_metrics") \
+        .tag("host", platform.node()) \
+        .field("cpu_percent", data["cpu"]["percent"]) \
+        .field("load_avg_1m", data["cpu"]["load_average"]["1min"]) \
+        .field("load_avg_5m", data["cpu"]["load_average"]["5min"]) \
+        .field("load_avg_15m", data["cpu"]["load_average"]["15min"]) \
+        .time(timestamp)
+    
+    # Memory metrics
+    mem_point = Point("memory_metrics") \
+        .tag("host", platform.node()) \
+        .field("memory_percent", data["memory"]["ram"]["percent"]) \
+        .field("swap_percent", data["memory"]["swap"]["percent"]) \
+        .time(timestamp)
+    
+    # Disk metrics for each partition
+    for partition in data["disk"]["partitions"]:
+        disk_point = Point("disk_metrics") \
+            .tag("host", platform.node()) \
+            .tag("mountpoint", partition["mountpoint"]) \
+            .field("disk_percent", partition["percent"]) \
+            .time(timestamp)
+        
+        write_api.write(
+            bucket=settings["influxdb"]["bucket"],
+            org=settings["influxdb"]["org"],
+            record=disk_point
+        )
+    
+    # Network metrics for each interface
+    for interface_name, interface_data in data["network"]["interfaces"].items():
+        if "io" in interface_data:
+            net_point = Point("network_metrics") \
+                .tag("host", platform.node()) \
+                .tag("interface", interface_name) \
+                .field("bytes_sent", interface_data["io"]["bytes_sent"]) \
+                .field("bytes_recv", interface_data["io"]["bytes_recv"]) \
+                .time(timestamp)
+            
+            write_api.write(
+                bucket=settings["influxdb"]["bucket"],
+                org=settings["influxdb"]["org"],
+                record=net_point
+            )
+    
+    # เขียนข้อมูล CPU และ Memory
+    write_api.write(
+        bucket=settings["influxdb"]["bucket"],
+        org=settings["influxdb"]["org"],
+        record=[cpu_point, mem_point]
+    )
+
+def check_thresholds(data):
+    """ตรวจสอบค่า thresholds และส่งการแจ้งเตือนถ้าจำเป็น"""
+    alerts = []
+    
+    # ตรวจสอบ CPU
+    if data["cpu"]["percent"] > thresholds["cpu_percent"]:
+        alerts.append(f"⚠️ CPU usage is high: {data['cpu']['percent']}% (threshold: {thresholds['cpu_percent']}%)")
+    
+    # ตรวจสอบ Memory
+    if data["memory"]["ram"]["percent"] > thresholds["memory_percent"]:
+        alerts.append(f"⚠️ Memory usage is high: {data['memory']['ram']['percent']}% (threshold: {thresholds['memory_percent']}%)")
+    
+    # ตรวจสอบ Disk
+    for partition in data["disk"]["partitions"]:
+        if partition["percent"] > thresholds["disk_percent"]:
+            alerts.append(f"⚠️ Disk usage is high on {partition['mountpoint']}: {partition['percent']}% (threshold: {thresholds['disk_percent']}%)")
+    
+    # ตรวจสอบอุณหภูมิ (ถ้ามีข้อมูล)
+    if isinstance(data["temperature"], dict) and "error" not in data["temperature"]:
+        for chip, sensors in data["temperature"].items():
+            if isinstance(sensors, list):
+                for sensor in sensors:
+                    if sensor.get("current") and sensor["current"] > thresholds["temperature"]:
+                        alerts.append(f"⚠️ Temperature is high on {chip} {sensor.get('label', '')}: {sensor['current']}°C (threshold: {thresholds['temperature']}°C)")
+    
+    # ส่งการแจ้งเตือนถ้าจำเป็น
+    if alerts and settings["discord"]["webhook_url"]:
+        send_discord_alert(alerts, data)
+
+def send_discord_alert(alerts, data):
+    """ส่งการแจ้งเตือนไปยัง Discord"""
+    webhook_url = settings["discord"]["webhook_url"]
+    
+    # สร้าง embed สำหรับ Discord
+    embeds = [{
+        "title": "🚨 System Alert",
+        "description": "\n".join(alerts),
+        "color": 16711680,  # สีแดง
+        "fields": [
+            {
+                "name": "CPU Usage",
+                "value": f"{data['cpu']['percent']}%",
+                "inline": True
+            },
+            {
+                "name": "Memory Usage",
+                "value": f"{data['memory']['ram']['percent']}%",
+                "inline": True
+            },
+            {
+                "name": "System Uptime",
+                "value": data["system"]["uptime"]["formatted"],
+                "inline": True
+            }
+        ],
+        "footer": {
+            "text": f"Host: {data['system']['hostname']} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        }
+    }]
+    
+    payload = {
+        "content": "⚠️ **Alert Notification** ⚠️",
+        "embeds": embeds
+    }
+    
+    try:
+        response = requests.post(
+            webhook_url,
+            data=json.dumps(payload),
+            headers={"Content-Type": "application/json"}
+        )
+        response.raise_for_status()
+        logging.info(f"Discord notification sent successfully: {response.status_code}")
+    except Exception as e:
+        logging.error(f"Failed to send Discord notification: {str(e)}")
 
 if __name__ == '__main__':
-    # Create directory for logs if it doesn't exist
-    os.makedirs('logs', exist_ok=True)
+    # สร้าง config directory ถ้ายังไม่มี
+    for directory in ['config', 'logs', 'prompts']:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
     
-    # Set up logging
-    import logging
-    from logging.handlers import RotatingFileHandler
+    # สร้างไฟล์ settings.json ถ้ายังไม่มี
+    if not os.path.exists('config/settings.json'):
+        with open('config/settings.json', 'w') as f:
+            json.dump(settings, f, indent=2)
     
-    handler = RotatingFileHandler('logs/api.log', maxBytes=10000000, backupCount=5)
-    handler.setFormatter(logging.Formatter(
-        '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-    ))
-    handler.setLevel(logging.INFO)
-    app.logger.addHandler(handler)
-    app.logger.setLevel(logging.INFO)
-    app.logger.info('Ubuntu Health Monitor starting up')
+    # สร้างไฟล์ thresholds.json ถ้ายังไม่มี
+    if not os.path.exists('config/thresholds.json'):
+        with open('config/thresholds.json', 'w') as f:
+            json.dump(thresholds, f, indent=2)
     
-    # Run the Flask app
+    # สร้างไฟล์ system_summary_prompt.txt ถ้ายังไม่มี
+    if not os.path.exists('prompts/system_summary_prompt.txt'):
+        if not os.path.exists('prompts'):
+            os.makedirs('prompts')
+        with open('prompts/system_summary_prompt.txt', 'w') as f:
+            f.write(system_summary_prompt)
+    
+    print("Starting Ubuntu Health Monitor API...")
     app.run(host='0.0.0.0', port=5000, debug=False)
