@@ -1,0 +1,17 @@
+[Unit]
+Description=Ubuntu Health Monitor
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Ubuntu-Health-Monitor
+ExecStart=/usr/bin/python3 /home/ubuntu/Ubuntu-Health-Monitor/app.py
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=ubuntu-health-monitor
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
