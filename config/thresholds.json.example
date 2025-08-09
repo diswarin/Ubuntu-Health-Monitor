@@ -1,0 +1,6 @@
+{
+  "cpu_percent": 80,
+  "memory_percent": 85,
+  "disk_percent": 90,
+  "temperature": 70
+}
