@@ -1,0 +1,15 @@
+{
+  "openai": {
+    "api_key": "your-api-key-here",
+    "model": "gpt-4"
+  },
+  "discord": {
+    "webhook_url": "your-discord-webhook-url-here"
+  },
+  "influxdb": {
+    "url": "http://localhost:8086",
+    "token": "my-token",
+    "org": "my-org",
+    "bucket": "system_metrics"
+  }
+}
