@@ -4,7 +4,7 @@
 
 ระบบติดตามและวิเคราะห์สถานะเซิร์ฟเวอร์ Ubuntu แบบเรียลไทม์ ด้วยการผสมผสาน AI, Data Visualization และการแจ้งเตือนอัตโนมัติ
 
-![System Overview](https://raw.githubusercontent.com/diswarin/Ubuntu-Health-Monitor/main/docs/images/system_overview.png)
+![System Overview](https://raw.githubusercontent.com/diswarin/Ubuntu-Health-Monitor/main/docs/system_overview.png)
 
 ## 📋 คุณสมบัติหลัก
 
